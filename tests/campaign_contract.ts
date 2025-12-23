@@ -33,7 +33,6 @@ describe("campaign_contract", () => {
     const campaign = await program.account.crowdCampaign.fetch(campaignPda);
 
     assert.equal(campaign.campaignName, name);
-    console.log("✅ Campaign verified at:", campaignPda.toBase58());
-
+    console.log("Campaign verified at:", campaignPda.toBase58());
   });
 });
