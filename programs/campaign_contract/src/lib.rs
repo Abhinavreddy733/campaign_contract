@@ -1,6 +1,6 @@
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::entrypoint::ProgramResult;
-use anchor_lang::system_program::{self, Transfer};
+// use anchor_lang::system_program::{self, Transfer};
 
 declare_id!("85rgQQX1eVG8VEMK6PMWjQgrhU8LoLjrJxMGZFfQXsL4");
 
@@ -64,12 +64,19 @@ pub mod campaign_contract {
 
         // ctx.accounts.campaign.campaign_amount_withdrawn += amount;
 
+        let minimum_balance = Rent::get()?.minimum_balance(campaign.to_account_info().data_len());
+
+        if **campaign.to_account_info().lamports.borrow() - minimum_balance < amount {
+            return Err(ProgramError::InsufficientFunds);
+        }
+
         **campaign.to_account_info().try_borrow_mut_lamports()? -= amount;
         **user.try_borrow_mut_lamports()? += amount;
 
         campaign.campaign_amount_withdrawn += amount;
 
         Ok(())
+
     }
 
     pub fn deposited(ctx: Context<Deposite>, amount: u64) -> ProgramResult {
@@ -80,7 +87,7 @@ pub mod campaign_contract {
             return Err(ProgramError::InvalidArgument);
         }
 
-        let ix = anchor_lang::solana_program::system_instruction::transfer(
+        let ix = system_instruction::transfer(
             &ctx.accounts.user.key(),
             &ctx.accounts.campaign.key(),
             amount,
@@ -94,12 +101,12 @@ pub mod campaign_contract {
                 ctx.accounts.campaign.to_account_info(),
             ],
         );
+
         // Check if the invoke operation was successful
         if let Err(e) = result {
             return Err(e.into()); // Convert the error to a ProgramResult
         }
-        // Proceed with the rest of the function
-        (&mut ctx.accounts.campaign).campaign_amount_collected += amount;
+
         Ok(())
     }
 
@@ -111,22 +118,25 @@ pub mod campaign_contract {
             return Err(ProgramError::IllegalOwner);
         }
 
-        let deadline = campaign.campaign_last_date;
-        let now = Clock::get()?.unix_timestamp;
+        // let deadline = campaign.campaign_last_date;
+        // let now = Clock::get()?.unix_timestamp;
 
-        if now < deadline {
-            return Err(ProgramError::InvalidArgument);
-        }
+        // if now < deadline {
+        //     return Err(ProgramError::InvalidArgument);
+        // }
 
-        let amount = campaign.campaign_amount_collected;
+        let amount = campaign.to_account_info().lamports();
+        let minimum_balance = Rent::get()?.minimum_balance(campaign.to_account_info().data_len());
+        let claimable_amount = amount - minimum_balance;
 
-        **campaign.to_account_info().try_borrow_mut_lamports()? -= amount;
-        **user.try_borrow_mut_lamports()? += amount;
+        **campaign.to_account_info().try_borrow_mut_lamports()? -= claimable_amount;
+        **user.try_borrow_mut_lamports()? += claimable_amount;
 
         campaign.campaign_status = 2; // mark campaign as successful
-        campaign.campaign_amount_withdrawn = amount;
+        campaign.campaign_amount_withdrawn = claimable_amount;
 
         Ok(())
+
     }
 
     pub fn cancel_campaign(ctx: Context<CancelCampaign>) -> ProgramResult {
@@ -136,10 +146,11 @@ pub mod campaign_contract {
         if campaign.campaign_owner != *user.key {
             return Err(ProgramError::IllegalOwner);
         }
-
-        campaign.campaign_cancelled = true;
+        campaign.campaign_last_date = Clock::get()?.unix_timestamp; // set deadline to now
         campaign.campaign_status = 1; // mark campaign as cancelled
+
         Ok(())
+
     }
 
     pub fn refunds(ctx: Context<Refunds>, amount: u64) -> ProgramResult {
@@ -151,15 +162,13 @@ pub mod campaign_contract {
             return Err(ProgramError::IllegalOwner);
         }
 
-        if campaign.campaign_amount_collected < amount {
+        let minimum_balance = Rent::get()?.minimum_balance(campaign.to_account_info().data_len());
+
+        if **campaign.to_account_info().lamports.borrow() - minimum_balance < amount {
             return Err(ProgramError::InsufficientFunds);
         }
 
-        if campaign.campaign_status != 1 {
-            return Err(ProgramError::InvalidArgument);
-        }
-
-        campaign.campaign_amount_collected -= amount;
+        campaign.campaign_amount_withdrawn += amount;
 
         **campaign.to_account_info().try_borrow_mut_lamports()? -= amount;
         **to.try_borrow_mut_lamports()? += amount;
@@ -173,7 +182,9 @@ pub mod campaign_contract {
         // **ctx.accounts.to.to_account_info().lamports.borrow_mut() += amount;
 
         Ok(())
+
     }
+
 }
 
 #[derive(Accounts)]
@@ -219,7 +230,7 @@ pub struct ClaimFunds<'info> {
         mut,
         seeds = [b"CAMPAIGN", user.key().as_ref()],
         bump,
-        constraint = clock.unix_timestamp <= campaign.campaign_last_date @ ErrorCode::CampaignActive
+        // constraint = clock.unix_timestamp <= campaign.campaign_last_date @ ErrorCode::CampaignActive
     )]
     pub campaign: Account<'info, CrowdCampaign>,
     #[account(mut, constraint = campaign.campaign_owner == user.key() @ ErrorCode::IllegalOwner)]
@@ -247,8 +258,7 @@ pub struct Refunds<'info> {
     #[account(
         mut,
         seeds = [b"CAMPAIGN", user.key().as_ref()],
-        bump,
-        constraint = clock.unix_timestamp <= campaign.campaign_last_date @ ErrorCode::CampaignActive
+        bump
     )]
     pub campaign: Account<'info, CrowdCampaign>,
     #[account(mut, constraint = campaign.campaign_owner == user.key() @ ErrorCode::IllegalOwner)]
@@ -268,10 +278,8 @@ pub struct CrowdCampaign {
     pub campaign_name: String,
     pub campaign_target_amount: u64,
     pub campaign_last_date: i64,
-    pub campaign_amount_collected: u64,
     pub campaign_amount_withdrawn: u64,
     pub campaign_status: u8, // 0 = active, 1 = cancelled, 2 = successful
-    pub campaign_cancelled: bool,
 }
 
 #[error_code]
